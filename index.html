@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LUMEN — concert lighting console</title>
+<meta name="description" content="A 3D concert lighting simulator: paste a YouTube URL, program moving lights, save presets and cue a show to the music." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4 L26 28 L6 28 Z' fill='%23ffd166'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/style.css" />
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<!-- The YouTube iframe lives in this CSS3D layer, behind the WebGL canvas.
+     A depth-only "blocker" mesh in the 3D scene punches a hole so the video
+     shows through exactly where the LED wall is. -->
+<div id="css3d" aria-hidden="true"></div>
+<canvas id="webgl"></canvas>
+
+<div class="fatal" id="fatal" hidden>
+  <p>This simulator needs WebGL, which your browser could not start.</p>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<header class="brand">
+  <h1>Lumen</h1>
+  <p class="brand__sub">concert lighting console</p>
+  <p class="brand__stat"><span id="fps">--</span> fps &middot; <span id="fixtureCount">0</span> fixtures</p>
+</header>
+
+<div class="viewbar">
+  <button type="button" class="btn btn--ghost" data-view="foh" aria-pressed="true">FOH</button>
+  <button type="button" class="btn btn--ghost" data-view="close" aria-pressed="false">Close</button>
+  <button type="button" class="btn btn--ghost" data-view="side" aria-pressed="false">Side</button>
+  <button type="button" class="btn btn--ghost" data-view="above" aria-pressed="false">Above</button>
+  <button type="button" class="btn btn--ghost" data-view="crowd" aria-pressed="false">Crowd</button>
+  <button type="button" class="btn btn--ghost" id="uiToggle" title="Hide the console (H)">Hide UI</button>
+</div>
+
+<!-- ----------------------------- patch ------------------------------ -->
+<aside class="panel panel--left" id="panelLeft" aria-label="Fixture patch">
+  <h2 class="panel__title">Patch</h2>
+
+  <div class="row row--wrap" role="group" aria-label="Select a group">
+    <button type="button" class="btn btn--sm" data-group="all">All</button>
+    <button type="button" class="btn btn--sm" data-group="back">Back truss</button>
+    <button type="button" class="btn btn--sm" data-group="front">Front truss</button>
+    <button type="button" class="btn btn--sm" data-group="floor">Floor</button>
+    <button type="button" class="btn btn--sm" data-group="blinder">Blinders</button>
+    <button type="button" class="btn btn--sm" data-group="odd">Odd</button>
+    <button type="button" class="btn btn--sm" data-group="even">Even</button>
+    <button type="button" class="btn btn--sm" data-group="none">Clear</button>
+  </div>
+
+  <ul class="fixtures" id="fixtureList"></ul>
+  <p class="note">Click to select &middot; shift-click for a range &middot; <kbd>&#8984;</kbd>/<kbd>ctrl</kbd>-click to toggle</p>
+</aside>
+
+<!-- --------------------------- attributes --------------------------- -->
+<aside class="panel panel--right" id="panelRight" aria-label="Fixture attributes">
+  <h2 class="panel__title">Editor <span class="panel__badge" id="selCount">0 selected</span></h2>
+
+  <div class="field">
+    <label for="attrDimmer">Dimmer <output id="outDimmer">0%</output></label>
+    <input type="range" id="attrDimmer" min="0" max="100" value="0" />
+  </div>
+  <div class="field">
+    <label for="attrPan">Pan <output id="outPan">0&deg;</output></label>
+    <input type="range" id="attrPan" min="-180" max="180" value="0" />
+  </div>
+  <div class="field">
+    <label for="attrTilt">Tilt <output id="outTilt">0&deg;</output></label>
+    <input type="range" id="attrTilt" min="-140" max="140" value="0" />
+  </div>
+  <div class="field">
+    <label for="attrZoom">Beam <output id="outZoom">14&deg;</output></label>
+    <input type="range" id="attrZoom" min="3" max="50" value="14" />
+  </div>
+  <div class="field">
+    <label for="attrStrobe">Strobe <output id="outStrobe">off</output></label>
+    <input type="range" id="attrStrobe" min="0" max="22" value="0" />
+  </div>
+
+  <div class="field">
+    <label for="attrColor">Colour</label>
+    <div class="row">
+      <input type="color" id="attrColor" value="#ffffff" />
+      <div class="swatches" id="swatches" role="group" aria-label="Colour presets"></div>
+    </div>
+  </div>
+
+  <h2 class="panel__title">Effect</h2>
+  <div class="field">
+    <label for="fxName">Engine</label>
+    <select id="fxName">
+      <option value="none">None</option>
+      <option value="sweep">Sweep — pan wave</option>
+      <option value="fan">Fan — tilt spread</option>
+      <option value="chase">Chase — dimmer run</option>
+      <option value="pulse">Pulse — dimmer breathe</option>
+      <option value="circle">Circle — pan/tilt orbit</option>
+      <option value="audio">Audio — mic reactive</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="fxScope">Apply to</label>
+    <select id="fxScope">
+      <option value="all">Whole rig</option>
+      <option value="selection">Selection only</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="fxRate">Rate <output id="outRate">0.50 Hz</output></label>
+    <input type="range" id="fxRate" min="1" max="400" value="50" />
+  </div>
+  <div class="field">
+    <label for="fxSize">Size <output id="outSize">40%</output></label>
+    <input type="range" id="fxSize" min="0" max="100" value="40" />
+  </div>
+  <div class="field">
+    <label for="fxSpread">Spread <output id="outSpread">60%</output></label>
+    <input type="range" id="fxSpread" min="0" max="200" value="60" />
+  </div>
+  <p class="note" id="audioNote" hidden>
+    Audio mode listens to your microphone so it can react to the music playing
+    from your speakers. Nothing is recorded or sent anywhere.
+  </p>
+  <button type="button" class="btn btn--sm" id="micBtn" hidden>Enable microphone</button>
+</aside>
+
+<!-- ------------------------------ dock ------------------------------ -->
+<footer class="dock" id="dock">
+
+  <section class="dock__block dock__block--video">
+    <h2 class="dock__title">Show feed</h2>
+    <div class="row">
+      <input type="url" id="ytUrl" placeholder="Paste a YouTube URL…" spellcheck="false"
+             aria-label="YouTube URL" />
+      <button type="button" class="btn" id="ytLoad">Load</button>
+      <button type="button" class="btn btn--ghost" id="ytDemo" title="Load a Creative Commons demo clip">Demo</button>
+    </div>
+    <div class="row transport">
+      <button type="button" class="btn btn--icon" id="ytPlay" aria-label="Play or pause">&#9654;</button>
+      <button type="button" class="btn btn--icon" id="ytMute" aria-label="Mute or unmute">&#128266;</button>
+      <input type="range" id="ytSeek" min="0" max="1000" value="0" aria-label="Seek" />
+      <span class="time" id="ytTime">0:00 / 0:00</span>
+    </div>
+    <p class="note" id="ytNote">The clip plays on the stage LED wall.</p>
+  </section>
+
+  <section class="dock__block dock__block--master">
+    <h2 class="dock__title">Master</h2>
+    <div class="field">
+      <label for="master">Grand master <output id="outMaster">100%</output></label>
+      <input type="range" id="master" min="0" max="100" value="100" />
+    </div>
+    <div class="row">
+      <button type="button" class="btn btn--danger" id="blackout" aria-pressed="false">Blackout</button>
+      <button type="button" class="btn" id="haze" aria-pressed="true">Haze</button>
+    </div>
+  </section>
+
+  <section class="dock__block dock__block--presets">
+    <h2 class="dock__title">Presets <span class="dock__hint">click to recall &middot; shift-click to overwrite</span></h2>
+    <div class="presets" id="presetSlots"></div>
+    <div class="row">
+      <input type="text" id="presetName" placeholder="Preset name" maxlength="18" />
+      <button type="button" class="btn" id="presetSave">Store</button>
+      <button type="button" class="btn btn--ghost" id="presetExport">Export</button>
+      <button type="button" class="btn btn--ghost" id="presetImport">Import</button>
+      <input type="file" id="presetFile" accept="application/json" hidden />
+    </div>
+  </section>
+
+  <section class="dock__block dock__block--cues">
+    <h2 class="dock__title">Cue list
+      <button type="button" class="btn btn--sm" id="cueArm" aria-pressed="true">Armed</button>
+    </h2>
+    <div class="row">
+      <select id="cuePreset" aria-label="Preset to fire"></select>
+      <button type="button" class="btn" id="cueAdd">Record at playhead</button>
+    </div>
+    <ol class="cues" id="cueList"></ol>
+  </section>
+
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
