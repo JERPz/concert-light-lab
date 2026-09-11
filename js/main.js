@@ -175,6 +175,9 @@ function tick() {
   stage.haze.visible = state.haze;
   stage.haze.material.uniforms.uTime.value = showTime;
 
+  // --- the band plays along to the music ---
+  stage.band.update(showTime, bands);
+
   controls.update();
   renderer.render(scene, camera);
   screen.render(camera);

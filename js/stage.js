@@ -103,6 +103,10 @@ export function buildStage(scene) {
     group.add(stack);
   }
 
+  // --- the band: skeleton musicians on the deck and riser ---
+  const band = buildBand();
+  group.add(band.group);
+
   // --- a suggestion of a crowd: dark bodies in front of the stage ---
   const crowd = crowdField(700);
   group.add(crowd);
@@ -117,7 +121,7 @@ export function buildStage(scene) {
   key.position.set(6, 18, 14);
   scene.add(key);
 
-  return { group, haze, crowd, ground };
+  return { group, haze, crowd, ground, band };
 }
 
 /** A boxy truss: two chords plus zig-zag webbing, cheap but readable. */
@@ -143,6 +147,249 @@ function truss(material, { x, y, z, span }) {
     g.add(strut);
   }
   return g;
+}
+
+/* ------------------------------------------------------------------ *
+ * The band — skeleton musicians.
+ *
+ * Each figure is a little armature of "bones": a pale, faintly emissive
+ * material so the skeletons catch beams and glow under the wash. They are
+ * assembled from primitives (skull, ribcage, spine, limb segments) grouped
+ * into shoulder/elbow/hip pivots so the update() below can make them play.
+ * ------------------------------------------------------------------ */
+
+const BONE = new THREE.MeshStandardMaterial({
+  color: 0xe9e6dc,
+  roughness: 0.6,
+  metalness: 0.05,
+  emissive: 0x1a1a20,
+  emissiveIntensity: 0.4,
+});
+
+/** A capsule "bone" pointing along +Y, its base at the group origin. */
+function bone(len, r = 0.05) {
+  const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, 8), BONE);
+  m.position.y = len / 2;
+  m.castShadow = true;
+  const pivot = new THREE.Group();
+  pivot.add(m);
+  return pivot;
+}
+
+/**
+ * One skeleton, standing at the group origin. Returns the pivots the animator
+ * needs (neck + both arms) alongside the assembled group.
+ */
+function skeleton() {
+  const g = new THREE.Group();
+
+  // Spine + pelvis + ribcage.
+  const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.2), BONE);
+  pelvis.position.y = 1.02;
+  pelvis.castShadow = true;
+  g.add(pelvis);
+
+  const spine = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.62, 8), BONE);
+  spine.position.y = 1.4;
+  spine.castShadow = true;
+  g.add(spine);
+
+  const ribs = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.28, 4, 10), BONE);
+  ribs.scale.set(1.15, 1, 0.7);
+  ribs.position.y = 1.5;
+  ribs.castShadow = true;
+  g.add(ribs);
+
+  // Head on a neck pivot so it can bob.
+  const neck = new THREE.Group();
+  neck.position.y = 1.72;
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), BONE);
+  skull.position.y = 0.16;
+  skull.scale.set(1, 1.1, 1.05);
+  skull.castShadow = true;
+  const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.14), BONE);
+  jaw.position.set(0, 0.05, 0.02);
+  neck.add(skull, jaw);
+  g.add(neck);
+
+  // Arms: shoulder pivot -> upper arm -> elbow pivot -> forearm.
+  function arm(side) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * 0.22, 1.62, 0);
+    const upper = bone(0.34, 0.045);
+    upper.rotation.z = side * 0.15;
+    const elbow = new THREE.Group();
+    elbow.position.y = 0.34;
+    const fore = bone(0.32, 0.04);
+    elbow.add(fore);
+    upper.add(elbow);
+    shoulder.add(upper);
+    g.add(shoulder);
+    shoulder.rotation.x = Math.PI; // hang arms down by default
+    return { shoulder, elbow };
+  }
+  const armL = arm(-1);
+  const armR = arm(1);
+
+  // Legs: hip pivot -> thigh -> knee -> shin, planted so the figure stands.
+  function leg(side) {
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.12, 1.0, 0);
+    const thigh = bone(0.44, 0.055);
+    const knee = new THREE.Group();
+    knee.position.y = 0.44;
+    const shin = bone(0.42, 0.05);
+    knee.add(shin);
+    thigh.add(knee);
+    hip.add(thigh);
+    hip.rotation.x = Math.PI; // point legs down
+    g.add(hip);
+    return { hip, knee };
+  }
+  const legL = leg(-1);
+  const legR = leg(1);
+
+  return { group: g, neck, armL, armR, legL, legR };
+}
+
+/**
+ * Place the skeletons and give them instruments + parts to play. Returns
+ * { group, update(t, bands) } so the render loop animates them to the music.
+ */
+function buildBand() {
+  const group = new THREE.Group();
+  const players = [];
+
+  const DECK_TOP = 0.5;
+  const RISER_TOP = 1.055;
+
+  const guitarMat = new THREE.MeshStandardMaterial({ color: 0x7a1f2b, roughness: 0.5, metalness: 0.3 });
+  const bassMat = new THREE.MeshStandardMaterial({ color: 0x1f3a7a, roughness: 0.5, metalness: 0.3 });
+  const micMat = new THREE.MeshStandardMaterial({ color: 0x222227, roughness: 0.4, metalness: 0.6 });
+  const drumMat = new THREE.MeshStandardMaterial({ color: 0x2a2d36, roughness: 0.5, metalness: 0.4 });
+
+  // A guitar/bass slung across the body of a standing player.
+  function makeGuitar(mat) {
+    const inst = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.09, 16), mat);
+    body.rotation.x = Math.PI / 2;
+    const gneck = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.9, 0.04), mat);
+    gneck.position.set(0.5, 0.28, 0);
+    gneck.rotation.z = -0.55;
+    inst.add(body, gneck);
+    inst.position.set(0, 1.25, 0.24);
+    inst.rotation.y = 0.2;
+    return inst;
+  }
+
+  // --- Singer, front and centre, at a mic stand ---
+  {
+    const s = skeleton();
+    s.group.position.set(0, DECK_TOP, 1.5);
+    s.group.rotation.y = Math.PI; // face the crowd (+Z)
+    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.5, 8), micMat);
+    stand.position.set(0, DECK_TOP + 0.75, 1.85);
+    const mic = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), micMat);
+    mic.position.set(0, DECK_TOP + 1.5, 1.85);
+    // Raise one hand toward the mic.
+    s.armR.shoulder.rotation.x = Math.PI - 1.9;
+    s.armR.elbow.rotation.x = -0.6;
+    group.add(s.group, stand, mic);
+    players.push({ ...s, role: "singer", phase: 0.0 });
+  }
+
+  // --- Guitarist, stage right ---
+  {
+    const s = skeleton();
+    s.group.position.set(-4.5, DECK_TOP, -0.5);
+    s.group.rotation.y = Math.PI - 0.35;
+    s.group.add(makeGuitar(guitarMat));
+    s.armL.shoulder.rotation.x = Math.PI - 1.1; s.armL.elbow.rotation.x = -1.0;
+    s.armR.shoulder.rotation.x = Math.PI - 0.9; s.armR.elbow.rotation.x = -0.8;
+    group.add(s.group);
+    players.push({ ...s, role: "guitar", phase: 1.3, strum: s.armR });
+  }
+
+  // --- Bassist, stage left ---
+  {
+    const s = skeleton();
+    s.group.position.set(4.5, DECK_TOP, -0.5);
+    s.group.rotation.y = Math.PI + 0.35;
+    s.group.add(makeGuitar(bassMat));
+    s.armL.shoulder.rotation.x = Math.PI - 1.0; s.armL.elbow.rotation.x = -0.9;
+    s.armR.shoulder.rotation.x = Math.PI - 0.85; s.armR.elbow.rotation.x = -0.7;
+    group.add(s.group);
+    players.push({ ...s, role: "bass", phase: 2.1, strum: s.armR });
+  }
+
+  // --- Drummer, seated on the riser ---
+  {
+    const s = skeleton();
+    s.group.position.set(0, RISER_TOP - 0.35, -5);
+    s.group.rotation.y = Math.PI;
+    // Sit: fold the thighs forward at the hips.
+    s.legL.hip.rotation.x = Math.PI * 0.55;
+    s.legR.hip.rotation.x = Math.PI * 0.55;
+    s.legL.knee.rotation.x = -0.9;
+    s.legR.knee.rotation.x = -0.9;
+    // Arms out front holding sticks.
+    s.armL.shoulder.rotation.x = Math.PI - 1.0; s.armL.elbow.rotation.x = -0.9;
+    s.armR.shoulder.rotation.x = Math.PI - 1.0; s.armR.elbow.rotation.x = -0.9;
+
+    // Sticks in each hand (attached to the forearm/elbow pivots).
+    for (const armPivot of [s.armL.elbow, s.armR.elbow]) {
+      const holder = new THREE.Group();
+      holder.position.y = 0.32;
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 6), BONE);
+      stick.position.y = 0.25;
+      holder.add(stick);
+      armPivot.add(holder);
+    }
+
+    // A tiny kit in front of the drummer.
+    const kit = new THREE.Group();
+    kit.position.set(0, RISER_TOP, -4.1);
+    for (const [dx, dy, r] of [[-0.6, 0.9, 0.28], [0.6, 0.9, 0.28], [0, 0.75, 0.34]]) {
+      const drum = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.28, 16), drumMat);
+      drum.position.set(dx, dy, 0);
+      kit.add(drum);
+    }
+    const kick = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.5, 18), drumMat);
+    kick.rotation.x = Math.PI / 2;
+    kick.position.set(0, 0.45, 0.25);
+    kit.add(kick);
+
+    group.add(s.group, kit);
+    players.push({ ...s, role: "drummer", phase: 0, drum: true });
+  }
+
+  function update(t, bands) {
+    const b = bands || { bass: 0, mid: 0, high: 0 };
+    for (const p of players) {
+      // Everyone bobs their head and sways a little to the low end.
+      const beat = Math.sin(t * 6 + p.phase);
+      p.neck.rotation.x = 0.12 * beat + (b.bass || 0) * 0.25;
+      p.group.rotation.z = 0.03 * Math.sin(t * 2 + p.phase);
+
+      if (p.role === "singer") {
+        // Bob the free hand and work the jaw a touch.
+        p.armL.shoulder.rotation.x = Math.PI - 0.4 + 0.25 * Math.sin(t * 3);
+        p.neck.children[1].position.y = 0.05 - 0.02 * Math.max(0, beat);
+      }
+      if (p.strum) {
+        // Strumming / picking motion on the playing forearm.
+        p.strum.elbow.rotation.x = -0.85 + 0.35 * Math.sin(t * 9 + p.phase);
+      }
+      if (p.drum) {
+        // Alternate stick hits, snappier on the high end.
+        const speed = 10 + (b.high || 0) * 14;
+        p.armL.elbow.rotation.x = -0.9 - 0.5 * Math.max(0, Math.sin(t * speed));
+        p.armR.elbow.rotation.x = -0.9 - 0.5 * Math.max(0, Math.sin(t * speed + Math.PI));
+      }
+    }
+  }
+
+  return { group, update };
 }
 
 /** Silhouetted heads and shoulders, instanced so 700 of them are free. */
